@@ -1,0 +1,13 @@
+v1.0 - Versión original (endless sin niveles)
+v1.1 - Sistema de niveles + monedas + tienda + PWA
+v1.2 - Sistema de logros (estilo Steam)
+      - Nuevos modos: Clásico, Casual, Hearts, Desafiante, Legend
+      - UI rediseñada (menú y HUD)
+      - Fondo gradiente gris animado
+      - Moneda como imagen (coin.png)
+      - Logros con recompensas reclamables
+      - Toast de logros al desbloquear
+v1.3 - Persistencia de nivel solo en modo Clásico
+      - Acceso a logros desde pausa (solo lectura, sin reclamar)
+      - Colisiones entre cubos con inercia (ya no se traspasan)
+v1.3.1 - Persistencia del precio de la tienda
