@@ -12,6 +12,35 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- LOADING / SPLASH -->
+  <div id="splash" class="splash">
+    <div class="splash__stage splash__stage--logo" id="splashLogo">
+      <img src="512.png" alt="Cube Crash" class="splash__logo">
+      <div class="splash__title">CUBE CRASH</div>
+      <div class="splash__version">v1.6</div>
+    </div>
+    <div class="splash__stage splash__stage--credits" id="splashCredits">
+      <div class="splash__credit-block">
+        <div class="splash__credit-role">Código y Desarrollo</div>
+        <div class="splash__credit-name">Oscar Antonio Alvarez Collado</div>
+      </div>
+      <div class="splash__credit-block">
+        <div class="splash__credit-role">Sonido</div>
+        <div class="splash__credit-name">Cristian Cuello</div>
+      </div>
+    </div>
+    <div class="splash__stage splash__stage--load" id="splashLoad">
+      <div class="splash__load-title">CUBE CRASH</div>
+      <div class="splash__bar">
+        <div class="splash__bar-fill" id="splashBarFill"></div>
+      </div>
+      <div class="splash__load-pct" id="splashPct">0%</div>
+    </div>
+    <div class="splash__stage splash__stage--tap" id="splashTap">
+      <div class="splash__tap-text">Toque para iniciar</div>
+    </div>
+  </div>
+
   <canvas id="c"></canvas>
 
   <!-- HUD -->
@@ -22,9 +51,15 @@
     </div>
 
     <div class="hud__top">
-      <div class="hud__score">
+      <div class="hud-panel">
         <div class="score-lbl"></div>
         <div class="cube-count-lbl"></div>
+        <div class="hud-panel__divider"></div>
+        <div class="hud-buffs">
+          <div class="hud-buff hud-buff--mode"></div>
+          <div class="hud-buff hud-buff--shop"></div>
+          <div class="hud-buff hud-buff--debuff"></div>
+        </div>
       </div>
       <div class="hud__right">
         <div class="coins-lbl"><img src="data/images/coin.png" class="coin-icon" alt=""> <span class="coins-val">0</span></div>
@@ -40,10 +75,12 @@
 
   <!-- Achievement Toast -->
   <div class="ach-toast" id="achToast">
+    <div class="ach-toast__bar"></div>
     <div class="ach-toast__icon">🏆</div>
     <div class="ach-toast__body">
-      <div class="ach-toast__title">Logro desbloqueado</div>
+      <div class="ach-toast__title">LOGRO DESBLOQUEADO</div>
       <div class="ach-toast__name"></div>
+      <div class="ach-toast__desc"></div>
     </div>
   </div>
 
@@ -122,25 +159,59 @@
 
     <!-- SHOP -->
     <div class="menu menu--shop">
-      <h2 class="menu-title">Tienda</h2>
-      <div class="shop-coins">
-        <img src="data/images/coin.png" class="coin-icon" alt=""> <span class="shop-coins-value">0</span>
-      </div>
-      <div class="shop-item" data-item="slowmo">
-        <div class="shop-item__info">
-          <div class="shop-item__name">Slow-Mo +1s</div>
-          <div class="shop-item__desc">Duración: <span class="slowmo-duration-val">1.5</span>s / 60s</div>
+      <div class="shop-panel">
+        <div class="shop-panel__header">
+          <div class="shop-panel__title">
+            <span class="shop-panel__badge">SYS</span>
+            <h2>ARMORY</h2>
+          </div>
+          <div class="shop-coins">
+            <img src="data/images/coin.png" class="coin-icon" alt="">
+            <span class="shop-coins-value">0</span>
+          </div>
         </div>
-        <button type="button" class="btn shop-buy-btn" data-item="slowmo">10</button>
+        <div class="shop-panel__grid">
+          <div class="shop-card" data-item="slowmo">
+            <div class="shop-card__icon">❄️</div>
+            <div class="shop-card__body">
+              <div class="shop-card__name">Slow-Mo Core</div>
+              <div class="shop-card__desc">+1s duración · <span class="slowmo-duration-val">1.5</span>s / 60s</div>
+            </div>
+            <button type="button" class="shop-card__buy shop-buy-btn" data-item="slowmo">10</button>
+          </div>
+          <div class="shop-card" data-item="touch">
+            <div class="shop-card__icon">⚔️</div>
+            <div class="shop-card__body">
+              <div class="shop-card__name">Touch Power</div>
+              <div class="shop-card__desc">Daño slash · x<span class="touch-power-val">1.0</span> / 3.0</div>
+            </div>
+            <button type="button" class="shop-card__buy shop-buy-btn" data-item="touch">100</button>
+          </div>
+          <div class="shop-card" data-item="mining">
+            <div class="shop-card__icon">⛏️</div>
+            <div class="shop-card__body">
+              <div class="shop-card__name">Mining</div>
+              <div class="shop-card__desc">Monedas/cubo · x<span class="mining-val">1.00</span></div>
+            </div>
+            <button type="button" class="shop-card__buy shop-buy-btn" data-item="mining">50</button>
+          </div>
+        </div>
+        <button type="button" class="btn shop-close-btn">Cerrar terminal</button>
       </div>
-      <button type="button" class="btn shop-close-btn">Cerrar</button>
     </div>
 
     <!-- ACHIEVEMENTS -->
     <div class="menu menu--achievements">
-      <h2 class="menu-title">Logros</h2>
-      <div class="ach-list" id="achList"></div>
-      <button type="button" class="btn ach-back-btn">← Volver</button>
+      <div class="ach-panel">
+        <div class="ach-panel__header">
+          <div class="ach-panel__title">
+            <span class="ach-panel__badge">REC</span>
+            <h2>LOGROS</h2>
+          </div>
+        </div>
+        <div class="ach-list" id="achList"></div>
+        <button type="button" class="btn ach-back-btn">Cerrar registro</button>
+      </div>
     </div>
   </div>
 

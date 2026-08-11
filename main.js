@@ -136,11 +136,15 @@ const state = {
 		totalCubesEver: 0 // lifetime for achievements
 	},
 	menus: {
-		active: MENU_MAIN
+		active: null // set to MENU_MAIN after splash
 	},
 	upgrades: {
 		slowmoDuration: 1500,
-		slowmoPrice: 10
+		slowmoPrice: 10,
+		touchPower: 1.0,
+		touchPowerPrice: 100,
+		mining: 1.0,
+		miningPrice: 50
 	},
 	achievements: {} // will be filled from ACHIEVEMENT_DEFS
 };
@@ -150,12 +154,15 @@ const state = {
 // Global State Selectors //
 ////////////////////////////
 
-const isInGame = () => !state.menus.active;
+let appReady = false; // false until splash finishes
+const isInGame = () => appReady && !state.menus.active;
 const isMenuVisible = () => !!state.menus.active;
 const isCasualGame = () => state.game.mode === GAME_MODE_CASUAL;
 const isHeartsGame = () => state.game.mode === GAME_MODE_HEARTS;
 const isDesafianteGame = () => state.game.mode === GAME_MODE_DESAFIANTE;
-const isPaused = () => state.menus.active === MENU_PAUSE;
+// gamePaused stays true while browsing shop/achievements opened from pause
+let gamePaused = false;
+const isPaused = () => gamePaused;
 const canEarnCoinsAndAchievements = () => 
 	state.game.mode === GAME_MODE_RANKED || 
 	state.game.mode === GAME_MODE_HEARTS || 
@@ -205,6 +212,10 @@ const loadUpgrades = () => {
 			const data = JSON.parse(raw);
 			if (data.slowmoDuration) state.upgrades.slowmoDuration = data.slowmoDuration;
 			if (data.slowmoPrice) state.upgrades.slowmoPrice = data.slowmoPrice;
+			if (data.touchPower) state.upgrades.touchPower = data.touchPower;
+			if (data.touchPowerPrice) state.upgrades.touchPowerPrice = data.touchPowerPrice;
+			if (data.mining) state.upgrades.mining = data.mining;
+			if (data.miningPrice) state.upgrades.miningPrice = data.miningPrice;
 		}
 	} catch(e) {}
 };
@@ -235,23 +246,46 @@ const checkLevelUp = () => {
 	if (gained >= req) {
 		state.game.level++;
 		state.game.scoreAtLevelStart = state.game.score;
-		// Persist level only in Classic mode
-		if (state.game.mode === GAME_MODE_RANKED) {
-			saveClassicLevel(state.game.level);
-		}
+		saveModeProgress();
+		checkLevelAchievements();
+		playSfx('levelup', 0.75);
 		return true;
 	}
 	return false;
 };
 
-// Classic mode level persistence
-const classicLevelKey = 'CubeCrash_ClassicLevel';
-const loadClassicLevel = () => {
-	const raw = localStorage.getItem(classicLevelKey);
-	return raw ? Math.max(1, parseInt(raw, 10)) : 1;
+// Per-mode level + bar progress persistence (all modes except Casual)
+const modeProgressKey = (mode) => {
+	if (mode === GAME_MODE_RANKED) return 'CubeCrash_Progress_Ranked';
+	if (mode === GAME_MODE_HEARTS) return 'CubeCrash_Progress_Hearts';
+	if (mode === GAME_MODE_DESAFIANTE) return 'CubeCrash_Progress_Desafiante';
+	return null;
 };
-const saveClassicLevel = (level) => {
-	localStorage.setItem(classicLevelKey, String(level));
+
+const saveModeProgress = () => {
+	const key = modeProgressKey(state.game.mode);
+	if (!key) return;
+	const data = {
+		level: state.game.level,
+		progress: getLevelProgress()
+	};
+	localStorage.setItem(key, JSON.stringify(data));
+};
+
+const loadModeProgress = (mode) => {
+	const key = modeProgressKey(mode);
+	if (!key) return { level: 1, progress: 0 };
+	try {
+		const raw = localStorage.getItem(key);
+		if (raw) {
+			const data = JSON.parse(raw);
+			return {
+				level: Math.max(1, parseInt(data.level, 10) || 1),
+				progress: clamp(Number(data.progress) || 0, 0, 0.999)
+			};
+		}
+	} catch (e) {}
+	return { level: 1, progress: 0 };
 };
 
 // ========================
@@ -266,6 +300,10 @@ const ACHIEVEMENT_DEFS = [
 	{ id: 'cubes_1000',    name: '¡I am Crash!',          desc: 'Rompe 1000 cubos.',                  reward: 500, icon: '👑' },
 	{ id: 'first_slowmo',  name: 'Slow Crash',            desc: 'Rompiste un cubo slow-mo.',          reward: 10,  icon: '❄️' },
 	{ id: 'first_resist',  name: '¡Que fuerte!',          desc: 'Rompe tu primer cubo resistente.',   reward: 20,  icon: '💪' },
+	{ id: 'play_casual',   name: 'Practicando',           desc: 'Juega por primera vez en Casual.',   reward: 0,   icon: '🎯', noReward: true },
+	{ id: 'play_ranked',   name: 'Endless Game',          desc: 'Juega por primera vez en Clásico.',  reward: 0,   icon: '♾️', noReward: true },
+	{ id: 'play_hearts',   name: 'Un clásico!',           desc: 'Juega por primera vez en Hearts.',   reward: 0,   icon: '❤️', noReward: true },
+	{ id: 'play_desafiante', name: 'Cosa Seria',           desc: 'Juega por primera vez en Desafiante.', reward: 0, icon: '⚡', noReward: true },
 	{ id: 'level_1',       name: 'Iniciando',             desc: 'Supera el nivel 1.',                 reward: 5,   icon: '🌱' },
 	{ id: 'level_5',       name: 'Aprendíz',              desc: 'Supera el nivel 5.',                 reward: 10,  icon: '📘' },
 	{ id: 'level_10',      name: 'Aficionado',            desc: 'Supera el nivel 10.',                reward: 15,  icon: '🎮' },
@@ -305,31 +343,73 @@ const saveTotalCubes = () => {
 	localStorage.setItem(totalCubesKey, String(state.game.totalCubesEver));
 };
 
+const achToastQueue = [];
+let achToastShowing = false;
 let achToastTimer = null;
+
 function showAchievementToast(def) {
-	const toast = document.getElementById('achToast');
-	if (!toast) return;
-	toast.querySelector('.ach-toast__name').textContent = def.name;
-	toast.classList.add('show');
-	clearTimeout(achToastTimer);
-	achToastTimer = setTimeout(() => toast.classList.remove('show'), 3800);
+	achToastQueue.push(def);
+	processAchToastQueue();
 }
 
-function unlockAchievement(id) {
-	// Achievements only in ranked / hearts / desafiante
-	if (state.game.mode === GAME_MODE_CASUAL) return;
+function processAchToastQueue() {
+	if (achToastShowing || achToastQueue.length === 0) return;
+	const toast = document.getElementById('achToast');
+	if (!toast) {
+		// DOM not ready — retry shortly without losing queue
+		setTimeout(processAchToastQueue, 200);
+		return;
+	}
+	const def = achToastQueue.shift();
+	achToastShowing = true;
+	const iconEl = toast.querySelector('.ach-toast__icon');
+	const nameEl = toast.querySelector('.ach-toast__name');
+	const descEl = toast.querySelector('.ach-toast__desc');
+	if (iconEl) iconEl.textContent = def.icon || '🏆';
+	if (nameEl) nameEl.textContent = def.name || '';
+	if (descEl) descEl.textContent = def.desc || '';
+	toast.classList.remove('show');
+	// force reflow so CSS transition retriggers
+	void toast.offsetWidth;
+	requestAnimationFrame(() => {
+		toast.classList.add('show');
+	});
+	try { playSfx('achievement', 0.75); } catch (e) {}
+	clearTimeout(achToastTimer);
+	achToastTimer = setTimeout(() => {
+		toast.classList.remove('show');
+		setTimeout(() => {
+			achToastShowing = false;
+			processAchToastQueue();
+		}, 450);
+	}, 3400);
+}
+
+function unlockAchievement(id, silent = false) {
+	// Most achievements blocked in Casual; mode-intro ones are allowed
+	const casualAllowed = ['play_casual'];
+	if (state.game.mode === GAME_MODE_CASUAL && !casualAllowed.includes(id)) return;
 	const data = state.achievements[id];
 	if (!data || data.unlocked) return;
 	data.unlocked = true;
 	saveAchievements();
-	const def = ACHIEVEMENT_DEFS.find(d => d.id === id);
-	if (def) showAchievementToast(def);
+	if (!silent) {
+		const def = ACHIEVEMENT_DEFS.find(d => d.id === id);
+		if (def) showAchievementToast(def);
+	}
+}
+
+function unlockModePlayAchievement(mode) {
+	if (mode === GAME_MODE_CASUAL) unlockAchievement('play_casual');
+	else if (mode === GAME_MODE_RANKED) unlockAchievement('play_ranked');
+	else if (mode === GAME_MODE_HEARTS) unlockAchievement('play_hearts');
+	else if (mode === GAME_MODE_DESAFIANTE) unlockAchievement('play_desafiante');
 }
 
 function claimAchievement(id) {
 	const data = state.achievements[id];
 	const def = ACHIEVEMENT_DEFS.find(d => d.id === id);
-	if (!data || !data.unlocked || data.claimed || !def || def.special) return;
+	if (!data || !data.unlocked || data.claimed || !def || def.special || def.noReward || !def.reward) return;
 	data.claimed = true;
 	state.game.coins += def.reward;
 	saveAchievements();
@@ -337,6 +417,7 @@ function claimAchievement(id) {
 	renderCoins();
 	renderMainCoins();
 	renderAchievementsList();
+	playSfx('reward', 0.8);
 }
 
 function checkCubeAchievements() {
@@ -349,18 +430,17 @@ function checkCubeAchievements() {
 	if (total >= 1000) unlockAchievement('cubes_1000');
 }
 
-function checkLevelAchievements() {
+function checkLevelAchievements(silent = false) {
 	const lvl = state.game.level;
-	// level N means we just completed level N-1, so "supera el nivel X" = reached level X+1
-	// We unlock when level becomes > X
-	if (lvl > 1)   unlockAchievement('level_1');
-	if (lvl > 5)   unlockAchievement('level_5');
-	if (lvl > 10)  unlockAchievement('level_10');
-	if (lvl > 20)  unlockAchievement('level_20');
-	if (lvl > 30)  unlockAchievement('level_30');
-	if (lvl > 50)  unlockAchievement('level_50');
-	if (lvl > 70)  unlockAchievement('level_70');
-	if (lvl > 100) unlockAchievement('level_100');
+	// "Supera el nivel X" = current level is greater than X
+	if (lvl > 1)   unlockAchievement('level_1', silent);
+	if (lvl > 5)   unlockAchievement('level_5', silent);
+	if (lvl > 10)  unlockAchievement('level_10', silent);
+	if (lvl > 20)  unlockAchievement('level_20', silent);
+	if (lvl > 30)  unlockAchievement('level_30', silent);
+	if (lvl > 50)  unlockAchievement('level_50', silent);
+	if (lvl > 70)  unlockAchievement('level_70', silent);
+	if (lvl > 100) unlockAchievement('level_100', silent);
 }
 
 
@@ -395,6 +475,127 @@ const handlePointerDown = (element, handler) => {
 ////////////////////////
 
 // Converts a number into a formatted string with thousand separators.
+
+////////////////////
+// AUDIO SYSTEM  //
+////////////////////
+const AUDIO_BASE = 'data/sounds/';
+const SFX = {
+	achievement: AUDIO_BASE + 'achievement.mp3',
+	click: AUDIO_BASE + 'click.mp3',
+	cash: AUDIO_BASE + 'cash.mp3',
+	levelup: AUDIO_BASE + 'levelup.mp3',
+	reward: AUDIO_BASE + 'reward.mp3',
+	break: AUDIO_BASE + 'break.mp3',
+	music: AUDIO_BASE + 'music.mp3'
+};
+
+const audioUnlocked = { value: false };
+const sfxCache = {};
+let musicAudio = null;
+let musicShouldPlay = false;
+
+function getSfx(key) {
+	if (!sfxCache[key]) {
+		const a = new Audio(SFX[key]);
+		a.preload = 'auto';
+		sfxCache[key] = a;
+	}
+	return sfxCache[key];
+}
+
+function playSfx(key, volume = 0.7) {
+	if (!audioUnlocked.value) return;
+	try {
+		const base = getSfx(key);
+		const a = base.cloneNode();
+		a.volume = volume;
+		a.play().catch(() => {});
+	} catch (e) {}
+}
+
+function ensureMusic() {
+	if (!musicAudio) {
+		musicAudio = new Audio(SFX.music);
+		musicAudio.loop = true;
+		musicAudio.volume = 0;
+		musicAudio.preload = 'auto';
+	}
+	return musicAudio;
+}
+
+let musicFadeTimer = null;
+const MUSIC_TARGET_VOL = 0.35;
+
+function startMusic() {
+	musicShouldPlay = true;
+	if (!audioUnlocked.value) return;
+	try {
+		const m = ensureMusic();
+		if (m.paused) {
+			m.volume = 0;
+			m.play().catch(() => {});
+		}
+		fadeMusicTo(MUSIC_TARGET_VOL, 2200);
+	} catch (e) {}
+}
+
+function pauseMusic() {
+	musicShouldPlay = false;
+	fadeMusicTo(0, 500, () => {
+		if (musicAudio && !musicShouldPlay) musicAudio.pause();
+	});
+}
+
+function fadeMusicTo(target, durationMs, onDone) {
+	if (!musicAudio) return;
+	clearInterval(musicFadeTimer);
+	const start = musicAudio.volume;
+	const diff = target - start;
+	if (Math.abs(diff) < 0.01) {
+		musicAudio.volume = target;
+		if (onDone) onDone();
+		return;
+	}
+	const steps = Math.max(1, Math.floor(durationMs / 40));
+	let i = 0;
+	musicFadeTimer = setInterval(() => {
+		i++;
+		const t = i / steps;
+		musicAudio.volume = Math.max(0, Math.min(1, start + diff * t));
+		if (i >= steps) {
+			clearInterval(musicFadeTimer);
+			musicAudio.volume = target;
+			if (onDone) onDone();
+		}
+	}, 40);
+}
+
+function unlockAudio() {
+	if (audioUnlocked.value) return;
+	audioUnlocked.value = true;
+	// warm up a silent play attempt on each buffer
+	Object.keys(SFX).forEach(k => {
+		try { getSfx(k); } catch (e) {}
+	});
+	ensureMusic();
+	if (musicShouldPlay) startMusic();
+}
+
+// Unlock on first pointer / key interaction
+['pointerdown', 'touchstart', 'keydown'].forEach(ev => {
+	window.addEventListener(ev, unlockAudio, { once: true, passive: true });
+});
+
+// Button click SFX (skip pause button)
+document.addEventListener('click', (e) => {
+	const btn = e.target.closest('button');
+	if (!btn) return;
+	if (btn.classList.contains('pause-btn') || btn.closest('.pause-btn')) return;
+	// pause control is a div, not button — still skip any .pause-btn
+	playSfx('click', 0.55);
+}, true);
+
 const formatNumber = num => num.toLocaleString();
 
 
@@ -1134,36 +1335,37 @@ const getTarget = (() => {
 		let isResistant = false;
 
 		const spinner = (level >= 5 || desafiante) && isInGame() && spinnerSpawner.shouldSpawn();
+		const onScreen = targets.length;
+		// Only one slow-mo cube allowed on screen at a time
+		const slowmoOnScreen = targets.some(t => t.wireframe);
 
-		// --- DESAFIANTE MODE ---
+		// --- DESAFIANTE: no level-based spawn order ---
 		if (desafiante) {
-			// Slow-mo: 50% less chance
-			const slowChance = slowmoSpawner.shouldSpawn() && Math.random() < 0.5;
-			if (slowChance) {
+			const slowChance = slowmoOnScreen ? 0 : clamp(0.05 - onScreen * 0.01, 0.01, 0.05);
+			const strongChance = clamp(0.10 - onScreen * 0.02, 0.01, 0.10);
+			const roll = Math.random();
+			if (roll < slowChance) {
 				color = BLUE;
 				wireframe = true;
-			} else {
-				// Resistant: base 20-30%, +1% per cube on screen
-				const onScreen = targets.length;
-				let chance = 0.25 + (onScreen * 0.01);
-				chance = clamp(chance, 0.2, 0.45);
-				if (Math.random() < chance) {
-					isResistant = true;
-					maxHealth = randomInt(3, 5);
-					health = maxHealth;
-					color = pickOne(allColors);
-				}
+			} else if (roll < slowChance + strongChance) {
+				isResistant = true;
+				maxHealth = randomInt(3, 5);
+				health = maxHealth;
+				color = pickOne(allColors);
 			}
 		}
-		// --- NORMAL LEVEL-BASED ---
+		// --- CLASSIC / HEARTS: level-based ---
 		else {
-			// Slow-mo from level 10
-			if (level >= 10 && slowmoSpawner.shouldSpawn()) {
-				color = BLUE;
-				wireframe = true;
+			// Slow-mo from level 10: base 30%, -1% per cube on screen (max 1 on screen)
+			if (level >= 10 && !slowmoOnScreen) {
+				const slowChance = clamp(0.30 - onScreen * 0.01, 0.05, 0.30);
+				if (Math.random() < slowChance) {
+					color = BLUE;
+					wireframe = true;
+				}
 			}
-			// Resistant from level 20
-			else if (level >= 20) {
+			// Resistant from level 20 (only if not already slow-mo)
+			if (!wireframe && level >= 20) {
 				let resistantCount = 0;
 				let normalCount = 0;
 				for (const t of targets) {
@@ -1215,15 +1417,11 @@ const getTarget = (() => {
 
 const updateTargetHealth = (target, healthDelta) => {
 	target.health += healthDelta;
-	// Only update stroke on non-wireframe targets.
-	// Showing "glue" is a temporary attempt to display health. For now, there's
-	// no reason to have wireframe targets with high health, so we're fine.
+	// Resistant cubes look like normal cubes; only the outer sphere shows the barrier.
 	if (!target.wireframe) {
-		const strokeWidth = target.health - 1;
-		const strokeColor = makeTargetGlueColor(target);
 		for (let p of target.polys) {
-			p.strokeWidth = strokeWidth;
-			p.strokeColor = strokeColor;
+			p.strokeWidth = 0;
+			p.strokeColor = makeTargetGlueColor(target);
 		}
 	}
 };
@@ -1375,15 +1573,16 @@ const sparks = [];
 const sparkPool = [];
 
 
-function addSpark(x, y, xD, yD) {
+function addSpark(x, y, xD, yD, color = null) {
 	const spark = sparkPool.pop() || {};
 
 	spark.x = x + xD * 0.5;
 	spark.y = y + yD * 0.5;
 	spark.xD = xD;
 	spark.yD = yD;
-	spark.life = random(200, 300);
+	spark.life = random(220, 420);
 	spark.maxLife = spark.life;
+	spark.color = color;
 
 	sparks.push(spark);
 
@@ -1392,7 +1591,7 @@ function addSpark(x, y, xD, yD) {
 
 
 // Spherical spark burst
-function sparkBurst(x, y, count, maxSpeed) {
+function sparkBurst(x, y, count, maxSpeed, color = null) {
 	const angleInc = TAU / count;
 	for (let i=0; i<count; i++) {
 		const angle = i * angleInc + angleInc * Math.random();
@@ -1401,8 +1600,45 @@ function sparkBurst(x, y, count, maxSpeed) {
 			x,
 			y,
 			Math.sin(angle) * speed,
-			Math.cos(angle) * speed
+			Math.cos(angle) * speed,
+			color
 		);
+	}
+}
+
+// Barrier / shield shatter particles (cyan-blue)
+function shieldBurst(x, y, big = false) {
+	const count = big ? 28 : 14;
+	const maxSpeed = big ? 14 : 9;
+	const colors = [
+		'rgba(120, 200, 255, 0.95)',
+		'rgba(80, 170, 255, 0.9)',
+		'rgba(180, 230, 255, 0.85)',
+		'rgba(100, 160, 255, 0.8)'
+	];
+	const angleInc = TAU / count;
+	for (let i = 0; i < count; i++) {
+		const angle = i * angleInc + angleInc * Math.random();
+		const speed = (1 - Math.random() ** 2) * maxSpeed;
+		addSpark(
+			x, y,
+			Math.sin(angle) * speed,
+			Math.cos(angle) * speed,
+			colors[i % colors.length]
+		);
+	}
+	// extra outer ring fragments
+	if (big) {
+		for (let i = 0; i < 12; i++) {
+			const angle = (TAU / 12) * i;
+			addSpark(
+				x + Math.sin(angle) * targetRadius * 1.2,
+				y + Math.cos(angle) * targetRadius * 1.2,
+				Math.sin(angle) * 6,
+				Math.cos(angle) * 6,
+				'rgba(160, 220, 255, 0.7)'
+			);
+		}
 	}
 }
 
@@ -1469,6 +1705,41 @@ function renderScoreHud() {
 		cubeCountNode.style.opacity = 0.7;
 	}
 	cubeCountNode.innerText = `Cubos: ${state.game.cubeCount}`;
+	renderHudBuffs();
+}
+
+function renderHudBuffs() {
+	const modeEl = $('.hud-buff--mode');
+	const shopEl = $('.hud-buff--shop');
+	const debuffEl = $('.hud-buff--debuff');
+	if (!modeEl || !shopEl || !debuffEl) return;
+
+	let modeBuff = '';
+	let modeDebuff = '';
+	if (isCasualGame()) {
+		modeBuff = 'Casual · sin muerte';
+		modeDebuff = 'Sin monedas / logros';
+	} else if (isHeartsGame()) {
+		modeBuff = 'Hearts · 3 vidas';
+		modeDebuff = '';
+	} else if (isDesafianteGame()) {
+		modeBuff = 'Desafiante · x2 monedas · más cubos';
+		modeDebuff = 'Slow-mo débil · más strong';
+	} else {
+		modeBuff = 'Clásico · niveles endless';
+		modeDebuff = '';
+	}
+
+	const shopParts = [];
+	const slowSec = (state.upgrades.slowmoDuration / 1000).toFixed(1);
+	if (state.upgrades.slowmoDuration > 1500) shopParts.push(`Slow-Mo ${slowSec}s`);
+	if (state.upgrades.touchPower > 1) shopParts.push(`Touch x${state.upgrades.touchPower.toFixed(1)}`);
+	if (state.upgrades.mining > 1) shopParts.push(`Mining x${state.upgrades.mining.toFixed(2)}`);
+	const shopBuff = shopParts.length ? shopParts.join(' · ') : 'Sin upgrades de tienda';
+
+	modeEl.textContent = modeBuff ? `▲ ${modeBuff}` : '';
+	shopEl.textContent = `◆ ${shopBuff}`;
+	debuffEl.textContent = modeDebuff ? `▼ ${modeDebuff}` : '';
 }
 
 renderScoreHud();
@@ -1578,9 +1849,12 @@ const levelReachedLblNode = $('.level-reached-lbl');
 
 const shopCoinsValueNode = $('.shop-coins-value');
 const slowmoDurationValNode = $('.slowmo-duration-val');
-const shopBuyBtn = $('.shop-buy-btn[data-item="slowmo"]');
+const touchPowerValNode = $('.touch-power-val');
+const miningValNode = $('.mining-val');
+const shopBuyBtnSlowmo = $('.shop-buy-btn[data-item="slowmo"]');
+const shopBuyBtnTouch = $('.shop-buy-btn[data-item="touch"]');
+const shopBuyBtnMining = $('.shop-buy-btn[data-item="mining"]');
 
-// Shop price is persisted in state.upgrades.slowmoPrice
 let previousMenuBeforeShop = MENU_MAIN;
 
 function showMenu(node) {
@@ -1590,21 +1864,75 @@ function hideMenu(node) {
 	node.classList.remove('active');
 }
 
+function coinBtnLabel(price) {
+	return `<img src="data/images/coin.png" class="coin-icon" style="width:1em;height:1em;vertical-align:middle"> ${price}`;
+}
+
 function renderShop() {
 	if (shopCoinsValueNode) shopCoinsValueNode.textContent = state.game.coins;
 	const currentSec = (state.upgrades.slowmoDuration / 1000).toFixed(1);
 	if (slowmoDurationValNode) slowmoDurationValNode.textContent = currentSec;
-	if (shopBuyBtn) {
-		shopBuyBtn.innerHTML = `<img src="data/images/coin.png" class="coin-icon" style="width:1em;height:1em;vertical-align:middle"> ${state.upgrades.slowmoPrice}`;
+	if (touchPowerValNode) touchPowerValNode.textContent = state.upgrades.touchPower.toFixed(1);
+	if (miningValNode) miningValNode.textContent = state.upgrades.mining.toFixed(2);
+
+	if (shopBuyBtnSlowmo) {
 		const maxed = state.upgrades.slowmoDuration >= 60000;
-		shopBuyBtn.disabled = maxed || state.game.coins < state.upgrades.slowmoPrice;
-		if (maxed) shopBuyBtn.textContent = 'MAX';
+		shopBuyBtnSlowmo.innerHTML = maxed ? 'MAX' : coinBtnLabel(state.upgrades.slowmoPrice);
+		shopBuyBtnSlowmo.disabled = maxed || state.game.coins < state.upgrades.slowmoPrice;
+	}
+	if (shopBuyBtnTouch) {
+		const maxed = state.upgrades.touchPower >= 3;
+		shopBuyBtnTouch.innerHTML = maxed ? 'MAX' : coinBtnLabel(state.upgrades.touchPowerPrice);
+		shopBuyBtnTouch.disabled = maxed || state.game.coins < state.upgrades.touchPowerPrice;
+	}
+	if (shopBuyBtnMining) {
+		shopBuyBtnMining.innerHTML = coinBtnLabel(state.upgrades.miningPrice);
+		shopBuyBtnMining.disabled = state.game.coins < state.upgrades.miningPrice;
 	}
 }
 
 // When true, achievements screen is view-only (no claim buttons)
 let achievementsViewOnly = false;
 let previousMenuBeforeAchievements = MENU_MAIN;
+
+function getBestLevelAcrossModes() {
+	let best = state.game.level || 1;
+	[GAME_MODE_RANKED, GAME_MODE_HEARTS, GAME_MODE_DESAFIANTE].forEach(mode => {
+		try {
+			const p = loadModeProgress(mode);
+			if (p && p.level > best) best = p.level;
+		} catch (e) {}
+	});
+	return best;
+}
+
+function getAchievementProgress(def) {
+	// returns { current, target, ratio } for progress bar
+	const data = state.achievements[def.id] || {};
+	if (data.unlocked) return { current: 1, target: 1, ratio: 1 };
+
+	const id = def.id;
+	if (id === 'first_cube') {
+		const c = state.game.totalCubesEver || 0;
+		return { current: Math.min(c, 1), target: 1, ratio: Math.min(c, 1) };
+	}
+	if (id.startsWith('cubes_')) {
+		const target = parseInt(id.split('_')[1], 10);
+		const c = state.game.totalCubesEver || 0;
+		return { current: Math.min(c, target), target, ratio: Math.min(1, c / target) };
+	}
+	if (id.startsWith('level_')) {
+		const need = parseInt(id.split('_')[1], 10); // "supera nivel N" => level > N
+		const best = getBestLevelAcrossModes();
+		// progress toward reaching level need+1
+		const target = need + 1;
+		return { current: Math.min(best, target), target, ratio: Math.min(1, best / target) };
+	}
+	if (id === 'first_slowmo' || id === 'first_resist' || id.startsWith('play_')) {
+		return { current: 0, target: 1, ratio: 0 };
+	}
+	return { current: 0, target: 1, ratio: 0 };
+}
 
 function renderAchievementsList() {
 	const list = document.getElementById('achList');
@@ -1614,7 +1942,7 @@ function renderAchievementsList() {
 		const data = state.achievements[def.id] || { unlocked: false, claimed: false };
 		const item = document.createElement('div');
 		item.className = 'ach-item';
-		if (!achievementsViewOnly && data.unlocked && !data.claimed && !def.special) {
+		if (!achievementsViewOnly && data.unlocked && !data.claimed && !def.special && !def.noReward && def.reward) {
 			item.classList.add('claimable');
 		} else if (data.unlocked) {
 			item.classList.add('unlocked');
@@ -1625,23 +1953,36 @@ function renderAchievementsList() {
 		let rewardHtml = '';
 		if (def.special) {
 			rewardHtml = '<span style="opacity:0.6;font-size:0.75rem">En desarrollo</span>';
+		} else if (def.noReward || !def.reward) {
+			rewardHtml = data.unlocked
+				? '<span style="opacity:0.55;font-size:0.72rem">✓</span>'
+				: '<span style="opacity:0.4;font-size:0.7rem">—</span>';
 		} else if (data.claimed) {
 			rewardHtml = '<span style="opacity:0.5">✓</span>';
 		} else if (data.unlocked && !achievementsViewOnly) {
-			// Can claim only from main menu
 			rewardHtml = `<button class="btn ach-claim-btn" data-id="${def.id}"><img src="data/images/coin.png" class="coin-icon" style="width:0.9em;height:0.9em"> ${def.reward}</button>`;
 		} else if (data.unlocked && achievementsViewOnly) {
-			// View only: show reward but not claimable
 			rewardHtml = `<span class="ach-item__reward" style="opacity:0.7"><img src="data/images/coin.png" class="coin-icon" style="width:0.9em;height:0.9em"> ${def.reward}</span>`;
 		} else {
 			rewardHtml = `<span class="ach-item__reward"><img src="data/images/coin.png" class="coin-icon" style="width:0.9em;height:0.9em"> ${def.reward}</span>`;
 		}
+
+		const prog = getAchievementProgress(def);
+		const pct = Math.floor(prog.ratio * 100);
+		const progressHtml = `
+			<div class="ach-progress">
+				<div class="ach-progress__track">
+					<div class="ach-progress__fill" style="width:${pct}%"></div>
+				</div>
+				<div class="ach-progress__label">${data.unlocked ? 'Completado' : `${prog.current}/${prog.target}`}</div>
+			</div>`;
 
 		item.innerHTML = `
 			<div class="ach-item__icon">${data.unlocked ? def.icon : '🔒'}</div>
 			<div class="ach-item__body">
 				<div class="ach-item__name">${def.name}</div>
 				<div class="ach-item__desc">${def.desc}</div>
+				${progressHtml}
 			</div>
 			${rewardHtml}
 		`;
@@ -1703,7 +2044,7 @@ function renderMenus() {
 			break;
 	}
 
-	setHudVisibility(!isMenuVisible());
+	setHudVisibility(appReady && !isMenuVisible());
 	menuContainerNode.classList.toggle('has-active', isMenuVisible());
 	menuContainerNode.classList.toggle('interactive-mode', isMenuVisible() && pointerIsDown);
 }
@@ -1746,7 +2087,12 @@ document.querySelectorAll('.mode-card').forEach(card => {
 
 // Pause
 handleClick($('.resume-btn'), () => resumeGame());
-handleClick($('.menu-btn--pause'), () => setActiveMenu(MENU_MAIN));
+handleClick($('.menu-btn--pause'), () => {
+	saveModeProgress();
+	gamePaused = false;
+	setActiveMenu(MENU_MAIN);
+	startMusic();
+});
 handleClick($('.shop-btn--pause'), () => {
 	previousMenuBeforeShop = MENU_PAUSE;
 	setActiveMenu(MENU_SHOP);
@@ -1762,12 +2108,15 @@ handleClick($('.play-again-btn'), () => {
 	setActiveMenu(null);
 	resetGame();
 });
-handleClick($('.menu-btn--score'), () => setActiveMenu(MENU_MAIN));
+handleClick($('.menu-btn--score'), () => {
+	setActiveMenu(MENU_MAIN);
+	startMusic();
+});
 
 // Shop
 handleClick($('.shop-close-btn'), () => setActiveMenu(previousMenuBeforeShop));
 
-handleClick(shopBuyBtn, () => {
+handleClick(shopBuyBtnSlowmo, () => {
 	if (state.upgrades.slowmoDuration >= 60000) return;
 	if (state.game.coins < state.upgrades.slowmoPrice) return;
 	state.game.coins -= state.upgrades.slowmoPrice;
@@ -1778,6 +2127,34 @@ handleClick(shopBuyBtn, () => {
 	renderCoins();
 	renderMainCoins();
 	renderShop();
+	playSfx('cash', 0.7);
+});
+
+handleClick(shopBuyBtnTouch, () => {
+	if (state.upgrades.touchPower >= 3) return;
+	if (state.game.coins < state.upgrades.touchPowerPrice) return;
+	state.game.coins -= state.upgrades.touchPowerPrice;
+	state.upgrades.touchPower = Math.min(3, +(state.upgrades.touchPower + 0.2).toFixed(1));
+	state.upgrades.touchPowerPrice = state.upgrades.touchPowerPrice * 2;
+	saveCoins();
+	saveUpgrades();
+	renderCoins();
+	renderMainCoins();
+	renderShop();
+	playSfx('cash', 0.7);
+});
+
+handleClick(shopBuyBtnMining, () => {
+	if (state.game.coins < state.upgrades.miningPrice) return;
+	state.game.coins -= state.upgrades.miningPrice;
+	state.upgrades.mining = +(state.upgrades.mining + 0.25).toFixed(2);
+	state.upgrades.miningPrice = Math.ceil(state.upgrades.miningPrice * 1.5);
+	saveCoins();
+	saveUpgrades();
+	renderCoins();
+	renderMainCoins();
+	renderShop();
+	playSfx('cash', 0.7);
 });
 
 // Achievements
@@ -1843,33 +2220,54 @@ function setGameMode(mode) {
 function resetGame() {
 	resetAllTargets();
 	state.game.time = 0;
-	// Classic mode: resume from persisted level; other modes always start at 1
-	if (state.game.mode === GAME_MODE_RANKED) {
-		state.game.level = loadClassicLevel();
+	gamePaused = false;
+	state.game.lives = 3;
+	startMusic();
+
+	// Restore level + bar progress for all modes except Casual
+	if (!isCasualGame()) {
+		const saved = loadModeProgress(state.game.mode);
+		state.game.level = saved.level;
+		const req = getLevelRequirement(state.game.level);
+		const gained = Math.floor(req * saved.progress);
+		state.game.scoreAtLevelStart = 0;
+		state.game.score = gained;
 	} else {
 		state.game.level = 1;
+		state.game.scoreAtLevelStart = 0;
+		state.game.score = 0;
 	}
-	state.game.scoreAtLevelStart = 0;
-	state.game.lives = 3;
+
 	resetAllCooldowns();
-	setScore(0);
 	setCubeCount(0);
 	spawnTime = getSpawnDelay();
+	renderScoreHud();
 	renderLevelBar();
 	renderCoins();
 	renderLives();
 	updateHudForMode();
+	checkLevelAchievements(true);
+	unlockModePlayAchievement(state.game.mode);
 }
 
 function pauseGame() {
-	isInGame() && setActiveMenu(MENU_PAUSE);
+	if (!state.menus.active || gamePaused) {
+		gamePaused = true;
+		setActiveMenu(MENU_PAUSE);
+		pauseMusic();
+	}
 }
 
 function resumeGame() {
-	isPaused() && setActiveMenu(null);
+	gamePaused = false;
+	setActiveMenu(null);
+	startMusic();
 }
 
 function endGame() {
+	gamePaused = false;
+	pauseMusic();
+	saveModeProgress();
 	handleCanvasPointerUp();
 	if (isNewHighScore()) {
 		setHighScore(state.game.score);
@@ -2064,8 +2462,8 @@ function tick(width, height, simTime, simSpeed, lag) {
 		// We can't use scaled pointer speed to determine this, since we care about actual screen
 		// distance covered.
 		const hitTestCount = Math.ceil(pointerSpeed / targetRadius * 2);
-		// Start loop at `1` and use `<=` check, so we skip 0% and end up at 100%.
-		// This omits the previous point position, and includes the most recent.
+		// Resistant: dual hitbox — barrier (larger) + cube (normal). Use the larger one.
+		const hitRadius = target.isResistant ? targetHitRadius * 1.55 : targetHitRadius;
 		for (let ii=1; ii<=hitTestCount; ii++) {
 			const percent = 1 - (ii / hitTestCount);
 			const hitX = pointerScene.x - pointerDelta.x * percent;
@@ -2075,7 +2473,7 @@ function tick(width, height, simTime, simSpeed, lag) {
 				hitY - target.projected.y
 			);
 
-			if (distance <= targetHitRadius) {
+			if (distance <= hitRadius) {
 				// Hit! (though we don't want to allow hits on multiple sequential frames)
 				if (!target.hit) {
 					target.hit = true;
@@ -2088,13 +2486,13 @@ function tick(width, height, simTime, simSpeed, lag) {
 					const sparkSpeed = 7 + pointerSpeedScaled * 0.125;
 
 					if (pointerSpeedScaled > minPointerSpeed) {
-						target.health--;
+						// Touch Power determines slash damage
+						target.health -= state.upgrades.touchPower;
 						if (hasLevelBar()) incrementScore(10);
 
 						if (target.health <= 0) {
 							incrementCubeCount(1);
 
-							// Lifetime counter + achievements
 							state.game.totalCubesEver++;
 							saveTotalCubes();
 							checkCubeAchievements();
@@ -2102,10 +2500,11 @@ function tick(width, height, simTime, simSpeed, lag) {
 							if (target.wireframe) unlockAchievement('first_slowmo');
 							if (target.isResistant) unlockAchievement('first_resist');
 
-							// Coins (not in pure casual)
 							if (canEarnCoinsAndAchievements()) {
-								let coinsEarned = target.isResistant ? target.maxHealth : 1;
+								let base = target.isResistant ? target.maxHealth : 1;
+								let coinsEarned = Math.floor(base * state.upgrades.mining);
 								if (isDesafianteGame()) coinsEarned *= 2;
+								if (coinsEarned < 1) coinsEarned = 1;
 								state.game.coins += coinsEarned;
 								saveCoins();
 								renderCoins();
@@ -2113,10 +2512,14 @@ function tick(width, height, simTime, simSpeed, lag) {
 
 							createBurst(target, forceMultiplier);
 							sparkBurst(hitX, hitY, 8, sparkSpeed);
+							if (target.isResistant) {
+								shieldBurst(hitX, hitY, true);
+								playSfx('break', 0.8);
+							}
 
 							if (target.wireframe) {
 								let duration = state.upgrades.slowmoDuration;
-								if (isDesafianteGame()) duration = Math.floor(duration * 0.3); // 70% less
+								if (isDesafianteGame()) duration = Math.floor(duration * 0.5);
 								slowmoRemaining = duration;
 								spawnTime = 0;
 								spawnExtra = 2;
@@ -2130,7 +2533,11 @@ function tick(width, height, simTime, simSpeed, lag) {
 							}
 						} else {
 							sparkBurst(hitX, hitY, 8, sparkSpeed);
-							glueShedSparks(target);
+							if (target.isResistant) {
+								shieldBurst(hitX, hitY, false);
+							} else {
+								glueShedSparks(target);
+							}
 							updateTargetHealth(target, 0);
 						}
 					} else {
@@ -2450,26 +2857,84 @@ function draw(ctx, width, height, viewScale) {
 	PERF_END('drawPolys');
 
 
+	// Resistant cube shields: transparent blue spheres with visible edges
+	// ------------------------------------------------------------------
+	targets.forEach(target => {
+		if (!target.isResistant || !target.projected) return;
+
+		const px = target.projected.x;
+		const py = target.projected.y;
+		// Perspective scale similar to projection
+		const depth = cameraDistance / (cameraDistance - (target.z || 0));
+		const r = targetRadius * 2.05 * Math.max(0.35, depth);
+
+		// Fade near camera like polys
+		let alpha = 1;
+		if (target.z > cameraFadeStartZ) {
+			alpha = Math.max(0, 1 - (target.z - cameraFadeStartZ) / cameraFadeRange);
+		}
+		if (alpha <= 0.02) return;
+
+		ctx.save();
+		ctx.globalAlpha = alpha * 0.35;
+		// Fill sphere
+		ctx.beginPath();
+		ctx.arc(px, py, r, 0, TAU);
+		ctx.fillStyle = 'rgba(80, 160, 255, 0.35)';
+		ctx.fill();
+
+		// Outer rim
+		ctx.globalAlpha = alpha * 0.9;
+		ctx.lineWidth = 2;
+		ctx.strokeStyle = 'rgba(140, 200, 255, 0.95)';
+		ctx.stroke();
+
+		// Latitude / longitude style edges for a spherical wire look
+		ctx.globalAlpha = alpha * 0.55;
+		ctx.lineWidth = 1.2;
+		ctx.strokeStyle = 'rgba(160, 210, 255, 0.85)';
+
+		// Horizontal ellipse (equator)
+		ctx.beginPath();
+		ctx.ellipse(px, py, r, r * 0.35, 0, 0, TAU);
+		ctx.stroke();
+
+		// Second latitude
+		ctx.beginPath();
+		ctx.ellipse(px, py - r * 0.35, r * 0.78, r * 0.22, 0, 0, TAU);
+		ctx.stroke();
+		ctx.beginPath();
+		ctx.ellipse(px, py + r * 0.35, r * 0.78, r * 0.22, 0, 0, TAU);
+		ctx.stroke();
+
+		// Vertical meridians
+		ctx.beginPath();
+		ctx.ellipse(px, py, r * 0.35, r, 0, 0, TAU);
+		ctx.stroke();
+		ctx.beginPath();
+		ctx.ellipse(px, py, r * 0.7, r, 0, 0, TAU);
+		ctx.stroke();
+
+		ctx.restore();
+	});
+
+
 	PERF_START('draw2D');
 
 	// 2D Sparks
 	// ---------------
-	ctx.strokeStyle = sparkColor;
-	ctx.lineWidth = sparkThickness;
-	ctx.beginPath();
 	sparks.forEach(spark => {
+		const lifeT = spark.life / spark.maxLife;
+		const scale = lifeT ** 0.5 * 1.6;
+		ctx.globalAlpha = Math.max(0.15, lifeT);
+		ctx.lineWidth = spark.color ? sparkThickness * 1.35 : sparkThickness;
+		ctx.strokeStyle = spark.color || sparkColor;
+		ctx.beginPath();
 		ctx.moveTo(spark.x, spark.y);
-		// Shrink sparks to zero length as they die.
-		// Speed up shrinking as life approaches 0 (root curve).
-		// Note that sparks already get smaller over time as their speed slows
-		// down from damping. So this is like a double scale down. To counter this
-		// a bit and keep the sparks larger for longer, we'll also increase the scale
-		// a bit after applying the root curve.
-		const scale = (spark.life / spark.maxLife) ** 0.5 * 1.5;
-		ctx.lineTo(spark.x - spark.xD*scale, spark.y - spark.yD*scale);
-
+		ctx.lineTo(spark.x - spark.xD * scale, spark.y - spark.yD * scale);
+		ctx.stroke();
 	});
-	ctx.stroke();
+	ctx.globalAlpha = 1;
 
 
 	// Touch Strokes
@@ -2693,3 +3158,145 @@ loadTotalCubes();
 renderCoins();
 renderMainCoins();
 renderLevelBar();
+
+// ========================
+// SPLASH / LOADING SEQUENCE
+// ========================
+(function runSplash() {
+	const splash = document.getElementById('splash');
+	const logoStage = document.getElementById('splashLogo');
+	const creditsStage = document.getElementById('splashCredits');
+	const loadStage = document.getElementById('splashLoad');
+	const tapStage = document.getElementById('splashTap');
+	const barFill = document.getElementById('splashBarFill');
+	const pctNode = document.getElementById('splashPct');
+	if (!splash) {
+		setActiveMenu(MENU_MAIN);
+		return;
+	}
+
+	// Hide menus/HUD during splash
+	if (menuContainerNode) menuContainerNode.style.visibility = 'hidden';
+	if (hudContainerNode) hudContainerNode.style.display = 'none';
+
+	const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+	function showStage(el) {
+		[logoStage, creditsStage, loadStage, tapStage].forEach(s => s && s.classList.remove('is-visible'));
+		if (el) el.classList.add('is-visible');
+	}
+
+	function hideStage(el) {
+		if (el) el.classList.remove('is-visible');
+	}
+
+	function loadAsset(url, type) {
+		return new Promise((resolve) => {
+			if (type === 'image') {
+				const img = new Image();
+				img.onload = () => resolve(true);
+				img.onerror = () => resolve(false);
+				img.src = url;
+			} else {
+				const a = new Audio();
+				const done = () => resolve(true);
+				a.addEventListener('canplaythrough', done, { once: true });
+				a.addEventListener('error', () => resolve(false), { once: true });
+				a.preload = 'auto';
+				a.src = url;
+				// fallback timeout
+				setTimeout(() => resolve(true), 8000);
+			}
+		});
+	}
+
+	const assets = [
+		{ url: '192.png', type: 'image' },
+		{ url: '512.png', type: 'image' },
+		{ url: 'data/images/coin.png', type: 'image' },
+		{ url: 'data/sounds/achievement.mp3', type: 'audio' },
+		{ url: 'data/sounds/click.mp3', type: 'audio' },
+		{ url: 'data/sounds/cash.mp3', type: 'audio' },
+		{ url: 'data/sounds/levelup.mp3', type: 'audio' },
+		{ url: 'data/sounds/reward.mp3', type: 'audio' },
+		{ url: 'data/sounds/break.mp3', type: 'audio' },
+		{ url: 'data/sounds/music.mp3', type: 'audio' }
+	];
+
+	async function preloadWithBar() {
+		showStage(loadStage);
+		let done = 0;
+		const total = assets.length;
+		const update = () => {
+			const pct = Math.round((done / total) * 100);
+			if (barFill) barFill.style.width = pct + '%';
+			if (pctNode) pctNode.textContent = pct + '%';
+		};
+		update();
+		for (const asset of assets) {
+			await loadAsset(asset.url, asset.type);
+			done++;
+			update();
+			// small yield so bar animates smoothly
+			await wait(40);
+		}
+		if (barFill) barFill.style.width = '100%';
+		if (pctNode) pctNode.textContent = '100%';
+		await wait(250);
+	}
+
+	async function sequence() {
+		// 1. Logo
+		showStage(logoStage);
+		await wait(2200);
+		hideStage(logoStage);
+		await wait(800);
+
+		// 2. Credits
+		showStage(creditsStage);
+		await wait(2800);
+		hideStage(creditsStage);
+		await wait(700);
+
+		// 3. Load bar + real preload
+		await preloadWithBar();
+		// Smooth exit of load stage before tap prompt
+		hideStage(loadStage);
+		await wait(650);
+
+		// 4. Tap to start
+		showStage(tapStage);
+	}
+
+	function finishSplash() {
+		unlockAudio();
+		appReady = true;
+
+		// Prepare music at 0 volume, then fade in for main menu
+		try {
+			const m = ensureMusic();
+			m.volume = 0;
+		} catch (e) {}
+
+		hideStage(tapStage);
+		splash.classList.add('is-done');
+
+		setTimeout(() => {
+			splash.remove();
+			if (menuContainerNode) menuContainerNode.style.visibility = '';
+			setActiveMenu(MENU_MAIN);
+			startMusic(); // music on main menu, gradual fade-in
+		}, 500);
+	}
+
+	tapStage.addEventListener('pointerdown', (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		finishSplash();
+	}, { once: true });
+
+	// Safety: never treat splash as in-game
+	appReady = false;
+	setHudVisibility(false);
+	sequence();
+})();

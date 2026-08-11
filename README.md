@@ -20,3 +20,6 @@ Desbloquea logros jugando y reclama las monedas en la pestaña **Logros**.
 - P: pausar / reanudar
 
 Desarrollado por **Oscar Antonio Alvarez Collado**
+
+## Créditos de audio
+Efectos de sonido por **Cristian**.
