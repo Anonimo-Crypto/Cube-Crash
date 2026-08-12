@@ -1,0 +1,77 @@
+{
+  "id": "/CubeCrash/",
+  "name": "Cube Crash",
+  "short_name": "CubeCrash",
+  "description": "Aplasta cubos 3D en un arcade endless. Modos Clásico, Casual, Hearts y Desafiante, sistema de logros, tienda de mejoras y progresión por niveles.",
+  "lang": "es",
+  "dir": "ltr",
+  "version": "1.9.1",
+  "version_name": "1.9.1",
+  "version_code": 191,
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "orientation": "any",
+  "background_color": "#2a2a30",
+  "theme_color": "#2a2a30",
+  "categories": ["games", "entertainment"],
+  "iarc_rating_id": "",
+  "prefer_related_applications": false,
+  "related_applications": [],
+  "icons": [
+    {
+      "src": "192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "screenshots/wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Cube Crash"
+    },
+    {
+      "src": "screenshots/narrow.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Cube Crash móvil"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Jugar",
+      "short_name": "Jugar",
+      "description": "Abrir Cube Crash",
+      "url": "./index.html",
+      "icons": [{ "src": "192.png", "sizes": "192x192" }]
+    }
+  ],
+  "handle_links": "preferred",
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  }
+}
